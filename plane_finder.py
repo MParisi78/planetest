@@ -78,6 +78,20 @@ CONFIG = {
         "to_addr":  os.environ.get("PF_TO_ADDR", ""),       # where the digest goes
     },
 
+    # --- saved-search alert ingestion (IMAP) ---
+    # Sites that block scraping (Trade-A-Plane, Controller) still send free
+    # saved-search ALERT emails server-side. Point this at the mailbox that
+    # receives them and the finder folds those listings in. Enabled when
+    # PF_IMAP_USER is set.
+    "imap": {
+        "host": os.environ.get("PF_IMAP_HOST", "imap.gmail.com"),
+        "port": int(os.environ.get("PF_IMAP_PORT", "993")),
+        "user": os.environ.get("PF_IMAP_USER", ""),
+        "password": os.environ.get("PF_IMAP_PASS", ""),  # app password, not your login
+        "folder": os.environ.get("PF_IMAP_FOLDER", "INBOX"),
+        "since_days": int(os.environ.get("PF_IMAP_SINCE_DAYS", "7")),
+    },
+
     # --- US-only ---
     # Drop listings whose location is clearly outside the US (keep unknowns).
     "us_only": True,
@@ -500,6 +514,115 @@ def parse_generic(source: str, html: str, base_url: str) -> list[Listing]:
             if href.startswith("/"):
                 href = base_url.rstrip("/") + href
             out.append(_listing_from_text(source, text, text, href))
+    return out
+
+
+# =============================================================================
+# EMAIL ALERT INGEST  -- read saved-search alert emails for sites that block
+# scraping (Trade-A-Plane, Controller). This is the legitimate, never-blocked
+# path: you enable the site's own saved-search email alerts, and we parse them.
+# =============================================================================
+# Map a sender domain -> (source label, base url for relative links).
+ALERT_SOURCES = {
+    "trade-a-plane.com": ("Trade-A-Plane", "https://www.trade-a-plane.com"),
+    "controller.com": ("Controller", "https://www.controller.com"),
+    "aso.com": ("ASO", "https://www.aso.com"),
+    "barnstormers.com": ("Barnstormers", "https://www.barnstormers.com"),
+}
+
+
+def _email_html(msg) -> str:
+    """Best HTML (or text) body out of an email.message.Message."""
+    html, text = "", ""
+    for part in msg.walk():
+        ctype = part.get_content_type()
+        if ctype not in ("text/html", "text/plain"):
+            continue
+        try:
+            payload = part.get_payload(decode=True)
+            if payload is None:
+                continue
+            chunk = payload.decode(part.get_content_charset() or "utf-8", "replace")
+        except (LookupError, ValueError):
+            continue
+        if ctype == "text/html":
+            html += chunk
+        else:
+            text += chunk
+    return html or text
+
+
+def _parse_alert_email(source: str, base: str, html: str) -> list[Listing]:
+    """Pull Cessna 172 listings out of one saved-search alert email."""
+    out: list[Listing] = []
+    if not html:
+        return out
+    soup = BeautifulSoup(html, "html.parser")
+    year_re = re.compile(r"\b(19[5-9]\d|20[0-2]\d)\b")
+    seen = set()
+    for a in soup.find_all("a", href=True):
+        text = a.get_text(" ", strip=True)
+        if "172" not in text or not year_re.search(text):
+            continue
+        href = a["href"]
+        if href.startswith("/"):
+            href = base.rstrip("/") + href
+        # find the smallest enclosing cell/row/item that holds just THIS listing,
+        # so a neighbouring listing's price doesn't bleed in
+        container, node = None, a
+        for _ in range(5):
+            node = node.parent if node is not None else None
+            if node is None:
+                break
+            if node.name in ("td", "tr", "li", "article", "div"):
+                n = sum(1 for x in node.find_all("a")
+                        if "172" in x.get_text() and year_re.search(x.get_text()))
+                if n <= 1:
+                    container = node
+                    break
+        body = (container or a.parent or a).get_text(" ", strip=True)
+        l = _listing_from_text(source, text, body, href)
+        lm = re.search(r"\b([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+)*,\s*[A-Z]{2})\b", body)
+        if lm:
+            l.location = lm.group(1).strip()
+        if l.uid in seen:
+            continue
+        seen.add(l.uid)
+        out.append(l)
+    return out
+
+
+def fetch_email_alerts() -> list[Listing]:
+    """Read saved-search alert emails over IMAP and parse out listings."""
+    cfg = CONFIG["imap"]
+    if not (cfg["user"] and cfg["password"]):
+        return []
+    import imaplib
+    import email as email_mod
+
+    out: list[Listing] = []
+    try:
+        M = imaplib.IMAP4_SSL(cfg["host"], cfg["port"])
+        M.login(cfg["user"], cfg["password"])
+        M.select(cfg["folder"])
+        since = (dt.date.today() - dt.timedelta(days=cfg["since_days"])).strftime("%d-%b-%Y")
+        typ, data = M.search(None, f'(SINCE {since})')
+        ids = data[0].split() if data and data[0] else []
+        for num in ids[-300:]:  # cap how many messages we scan
+            typ, msgdata = M.fetch(num, "(RFC822)")
+            if not msgdata or not msgdata[0]:
+                continue
+            msg = email_mod.message_from_bytes(msgdata[0][1])
+            frm = (msg.get("From") or "").lower()
+            match = next((v for dom, v in ALERT_SOURCES.items() if dom in frm), None)
+            if not match:
+                continue
+            source, base = match
+            out.extend(_parse_alert_email(source, base, _email_html(msg)))
+        M.logout()
+        print(f"    parsed {len(out)} listing(s) from alert emails")
+    except Exception as e:  # noqa: BLE001 - never let mail issues kill the run
+        print(f"  [warn] email alert ingest failed: {e}")
     return out
 
 
@@ -993,6 +1116,11 @@ def main(debug: bool = False) -> None:
         listings = parser(html) if html else []
         print(f"    parsed {len(listings)} raw listings")
         all_listings.extend(listings)
+
+    # saved-search alert emails (Trade-A-Plane / Controller / ASO that block scraping)
+    if CONFIG["imap"]["user"]:
+        print("  reading saved-search alert emails ...")
+        all_listings.extend(fetch_email_alerts())
 
     # dedupe by uid
     uniq = {l.uid: l for l in all_listings}.values()

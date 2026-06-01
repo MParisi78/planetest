@@ -56,6 +56,11 @@ jobs:
           PF_DIGEST_MD: digest.md        # markdown digest (for the issue)
           PF_SITE_DIR: site              # static dashboard output dir
           PF_HISTORY: plane_finder_history.json  # day-over-day trend, committed back
+          # Optional: ingest Trade-A-Plane / Controller saved-search alert emails.
+          # Set these three repo secrets to enable; leave unset to skip cleanly.
+          PF_IMAP_HOST: ${{ secrets.PF_IMAP_HOST }}
+          PF_IMAP_USER: ${{ secrets.PF_IMAP_USER }}
+          PF_IMAP_PASS: ${{ secrets.PF_IMAP_PASS }}
         run: python plane_finder.py
 
       - name: Configure Pages

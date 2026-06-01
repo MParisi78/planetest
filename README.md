@@ -41,6 +41,29 @@ Tuning knobs (env vars, also in `CONFIG`): `PF_MAX_DETAILS`, `PF_MAX_PAGES`,
 `PF_FETCH_DELAY`. The script fetches each listing's detail page (where price and
 specs live), so it crawls politely with a delay between requests.
 
+### Getting Trade-A-Plane & Controller in (without scraping)
+Those sites sit behind an anti-bot wall (CloudFront JS challenge) that returns
+HTTP 403 to *any* automated request — there's no header trick, and bypassing it
+would violate their Terms of Service. The legitimate path is their **own
+saved-search email alerts**, which are server-side and never blocked:
+
+1. On Trade-A-Plane (and Controller), save your Cessna 172 search and turn on
+   **email alerts** to an inbox you control.
+2. Give the finder read-only IMAP access to that inbox via three secrets
+   (use an **app password**, not your login):
+
+   | Secret | Value |
+   |--------|-------|
+   | `PF_IMAP_HOST` | e.g. `imap.gmail.com` (default) |
+   | `PF_IMAP_USER` | the mailbox address |
+   | `PF_IMAP_PASS` | a mail **app password** |
+
+   Optional: `PF_IMAP_FOLDER` (default `INBOX`), `PF_IMAP_SINCE_DAYS` (default `7`).
+
+The finder reads alert emails from known senders (Trade-A-Plane, Controller, ASO,
+Barnstormers), parses the listings, and ranks them on the **For Sale** tab right
+alongside the scraped sources. Enabled automatically when `PF_IMAP_USER` is set.
+
 ## Files
 - `plane_finder.py` — search, scoring, unicorn-detection, dashboard + digest output
 - `.github/workflows/daily-plane-finder.yml` — daily schedule + Pages deploy (runs on GitHub's servers)
