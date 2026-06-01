@@ -690,6 +690,9 @@ def main(debug: bool = False) -> None:
         os.makedirs(site_dir, exist_ok=True)
         with open(os.path.join(site_dir, "index.html"), "w") as f:
             f.write(build_dashboard_html(top, unicorns, history))
+        # Tell GitHub Pages to serve the artifact as-is (skip Jekyll), so the
+        # dashboard is never mistaken for a Jekyll site / README homepage.
+        open(os.path.join(site_dir, ".nojekyll"), "w").close()
         print(f"  [ok] wrote dashboard to {os.path.join(site_dir, 'index.html')}")
 
     # always print a plaintext fallback so a manual run is still useful
