@@ -119,6 +119,11 @@ class Listing:
     location: str = ""
     score: float = 0.0
     unicorn: bool = False
+    # auction-specific (AircraftBidder)
+    auction: bool = False
+    bids: int | None = None
+    status: str = ""
+    matches: bool = False   # for auction lots: does it meet the buy criteria?
     reasons: list = field(default_factory=list)
 
     @property
@@ -232,6 +237,15 @@ def _extract_smoh(text: str) -> int | None:
     return _num(m.group(1)) if m else None
 
 
+def _extract_tt(text: str) -> int | None:
+    """Airframe total time from free text: '3,150 TT', '7,770 Hours Total Time'."""
+    m = re.search(
+        r"([\d,]{2,6})\s*(?:hrs?|hours?)?\s*"
+        r"(?:total time|tt(?:sn|af)?|ttaf|airframe|time since new)",
+        (text or "").lower())
+    return _num(m.group(1)) if m else None
+
+
 def _detect_damage(text: str) -> bool | None:
     """False = explicitly clean, True = damage mentioned, None = unknown.
 
@@ -267,8 +281,6 @@ def _model_variant(title: str, fallback: str = "172") -> str:
 def _listing_from_text(source: str, title: str, body: str, url: str,
                        location: str = "") -> Listing:
     """Extract structured fields from free-text listing copy."""
-    body_l = body.lower()
-
     year = None
     ym = re.search(r"\b(19[5-9]\d|20[0-2]\d)\b", title) or re.search(r"\b(19[5-9]\d|20[0-2]\d)\b", body)
     if ym:
@@ -281,14 +293,9 @@ def _listing_from_text(source: str, title: str, body: str, url: str,
     if pm:
         price = _num(pm.group(1))
 
-    tt = None
-    ttm = re.search(r"([\d,]{2,6})\s*(?:hrs?\s*)?(?:tt(?:sn|af)?|total time|ttaf|airframe)", body_l)
-    if ttm:
-        tt = _num(ttm.group(1))
-
     return Listing(
         source=source, title=title, year=year, model=_model_variant(title),
-        price=price, total_time=tt, engine_smoh=_extract_smoh(body),
+        price=price, total_time=_extract_tt(body), engine_smoh=_extract_smoh(body),
         damage_history=_detect_damage(body), ifr_ready=_detect_ifr(body),
         url=url, location=location,
     )
@@ -417,6 +424,66 @@ def parse_barnstormers(list_html: str) -> list[Listing]:
         if lm:
             loc = lm.group(1).strip(" .,")
         out.append(_listing_from_text("Barnstormers", title, ad, href, location=loc))
+    return out
+
+
+# --- AircraftBidder: online aircraft auctions ---------------------------------
+AIRCRAFTBIDDER_BROWSE = "https://auction.aircraftbidder.com/Browse/C161397/Aircraft"
+
+
+def parse_aircraftbidder(list_html: str) -> list[Listing]:
+    """Cessna auction lots. price = current/starting bid; marks auction=True."""
+    out: list[Listing] = []
+    if not list_html:
+        return out
+    base = "https://auction.aircraftbidder.com"
+    soup = BeautifulSoup(list_html, "html.parser")
+    seen, lots = set(), []
+    for card in soup.select("div.galleryUnit"):
+        anchors = card.find_all("a", href=re.compile(r"/Listing/Details/"))
+        if not anchors:
+            continue
+        # the image link has no text; use the anchor that carries the title
+        a = max(anchors, key=lambda x: len(x.get_text(strip=True)))
+        title = a.get_text(" ", strip=True)
+        if "cessna" not in title.lower():
+            continue
+        href = a["href"]
+        if href.startswith("/"):
+            href = base + href
+        if href in seen:
+            continue
+        seen.add(href)
+        lots.append((href, title, card.get_text(" ", strip=True)))
+
+    for href, raw_title, card_text in lots[:CONFIG["max_detail_fetches"]]:
+        title = re.sub(r"^\s*\d+\s*Bid\(s\)\s*", "", raw_title).strip()
+        bm = re.search(r"(\d+)\s*Bid\(s\)", raw_title) or re.search(r"(\d+)\s*Bid\(s\)", card_text)
+        bids = int(bm.group(1)) if bm else None
+
+        html = _get(href, referer=AIRCRAFTBIDDER_BROWSE)
+        time.sleep(CONFIG["fetch_delay"])
+        body = BeautifulSoup(html, "html.parser").get_text(" ", strip=True) if html else card_text
+
+        l = _listing_from_text("AircraftBidder", title, body, href)
+        l.auction = True
+        l.bids = bids
+        # current/starting bid for the price column
+        bidm = re.search(r"current bid[:\s]*\$?\s?([\d,]+)", body, re.I) \
+            or re.search(r"starting bid[:\s]*\$?\s?([\d,]+)", body, re.I) \
+            or re.search(r"\$\s?([\d,]{4,})", card_text)
+        if bidm:
+            l.price = _num(bidm.group(1))
+        if re.search(r"reserve (?:price )?not met", body, re.I):
+            l.status = "Reserve not met"
+        elif re.search(r"\bcompleted\b", card_text, re.I):
+            l.status = "Completed"
+        elif re.search(r"reserve met|meets reserve", body + card_text, re.I):
+            l.status = "Reserve met"
+        lm = re.search(r"\b([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+)*,\s*[A-Z]{2})\b", body)
+        if lm:
+            l.location = lm.group(1).strip()
+        out.append(l)
     return out
 
 
@@ -639,11 +706,12 @@ def build_digest_markdown(top: list[Listing], unicorns: list[Listing]) -> str:
 
 
 def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
-                         history: list) -> str:
+                         history: list, auctions: list[Listing] | None = None) -> str:
     """Self-contained static dashboard (one HTML file) for GitHub Pages.
 
-    Data is embedded as JSON and rendered client-side so the table is
-    sortable/filterable with no external dependencies.
+    Data is embedded as JSON and rendered client-side so the tables are
+    sortable/filterable with no external dependencies. Two tabs: fixed-price
+    listings ("For Sale") and AircraftBidder auctions ("Auctions").
     """
     updated = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     payload = {
@@ -652,6 +720,7 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
         "min_year": CONFIG["min_year"],
         "top": [asdict(l) for l in top],
         "unicorns": [asdict(u) for u in unicorns],
+        "auctions": [asdict(a) for a in (auctions or [])],
         "history": history,
     }
     # Guard against </script> breaking out of the inline script tag.
@@ -699,6 +768,13 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
           padding: 1px 6px; font-size: 11px; margin-left: 6px; }
   .spark { display: flex; align-items: flex-end; gap: 3px; height: 48px; margin-top: 6px; }
   .spark span { width: 8px; background: #6db3ff; border-radius: 2px 2px 0 0; }
+  .tabs { display: flex; gap: 6px; margin: 8px 0 16px; border-bottom: 1px solid #ddd; }
+  .tab { background: none; border: none; padding: 8px 14px; font: inherit; cursor: pointer;
+         color: #888; border-bottom: 2px solid transparent; }
+  .tab.active { color: inherit; border-bottom-color: #6db3ff; font-weight: 700; }
+  .hidden { display: none; }
+  .match { display: inline-block; background: #1a7f37; color: #fff; border-radius: 6px;
+           padding: 1px 6px; font-size: 11px; }
   footer { margin-top: 32px; color: #999; font-size: 12px; }
 </style>
 </head>
@@ -710,30 +786,59 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
 <div id="unicorns"></div>
 
 <div class="stats">
-  <div class="card"><div class="n" id="stat-top">0</div><div class="l">Top matches</div></div>
+  <div class="card"><div class="n" id="stat-top">0</div><div class="l">For sale</div></div>
   <div class="card"><div class="n" id="stat-uni">0</div><div class="l">Unicorns</div></div>
+  <div class="card"><div class="n" id="stat-auc">0</div><div class="l">Auction matches</div></div>
   <div class="card">
     <div class="l">Matches / day</div>
     <div class="spark" id="spark"></div>
   </div>
 </div>
 
-<input type="search" id="filter" placeholder="Filter by title, model, source...">
+<div class="tabs">
+  <button class="tab active" data-tab="sale">For Sale (<span id="n-sale">0</span>)</button>
+  <button class="tab" data-tab="auction">Auctions (<span id="n-auction">0</span>)</button>
+</div>
 
-<table id="tbl">
-  <thead><tr>
-    <th data-k="rank">#</th>
-    <th data-k="score">Score</th>
-    <th data-k="title">Listing</th>
-    <th data-k="price">Price</th>
-    <th data-k="total_time">TT</th>
-    <th data-k="model">Model</th>
-    <th data-k="year">Year</th>
-    <th data-k="location">Location</th>
-    <th data-k="source">Source</th>
-  </tr></thead>
-  <tbody></tbody>
-</table>
+<section id="tab-sale">
+  <input type="search" id="filter" placeholder="Filter by title, model, source...">
+  <table id="tbl">
+    <thead><tr>
+      <th data-k="rank">#</th>
+      <th data-k="score">Score</th>
+      <th data-k="title">Listing</th>
+      <th data-k="price">Price</th>
+      <th data-k="total_time">TT</th>
+      <th data-k="model">Model</th>
+      <th data-k="year">Year</th>
+      <th data-k="location">Location</th>
+      <th data-k="source">Source</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<section id="tab-auction" class="hidden">
+  <p class="sub">Live & recent Cessna lots on
+    <a href="https://auction.aircraftbidder.com/" target="_blank" rel="noopener">AircraftBidder</a>.
+    Bids are legally binding and a buyer's premium is added on top — inspect before bidding.</p>
+  <input type="search" id="filterA" placeholder="Filter auctions by title, model, location...">
+  <table id="tblA">
+    <thead><tr>
+      <th data-k="rank">#</th>
+      <th data-k="matches">Match</th>
+      <th data-k="price">Current bid</th>
+      <th data-k="bids">Bids</th>
+      <th data-k="title">Lot</th>
+      <th data-k="total_time">TT</th>
+      <th data-k="model">Model</th>
+      <th data-k="year">Year</th>
+      <th data-k="location">Location</th>
+      <th data-k="status">Status</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
 
 <footer>
   Auto-generated by <code>plane_finder.py</code>. Listing sites sometimes block
@@ -747,8 +852,15 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
   document.getElementById("updated").textContent = D.updated;
   document.getElementById("crit").textContent =
     D.min_year + "+ · no damage · under $" + D.ceiling.toLocaleString();
+  D.auctions = D.auctions || [];
   document.getElementById("stat-top").textContent = D.top.length;
   document.getElementById("stat-uni").textContent = D.unicorns.length;
+  document.getElementById("stat-auc").textContent = D.auctions.filter(a => a.matches).length;
+  document.getElementById("n-sale").textContent = D.top.length;
+  document.getElementById("n-auction").textContent = D.auctions.length;
+
+  function esc(s){ return String(s ?? "").replace(/[&<>"]/g, c =>
+    ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c])); }
 
   // unicorn callouts
   if (D.unicorns.length) {
@@ -764,57 +876,79 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
 
   // sparkline of matches/day
   const hist = D.history.slice(-30);
-  const max = Math.max(1, ...hist.map(h => h.kept || 0));
+  const hmax = Math.max(1, ...hist.map(h => h.kept || 0));
   document.getElementById("spark").innerHTML = hist.map(h =>
-    `<span style="height:${Math.round((h.kept||0)/max*100)}%" title="${h.date}: ${h.kept} matches"></span>`).join("");
+    `<span style="height:${Math.round((h.kept||0)/hmax*100)}%" title="${h.date}: ${h.kept} matches"></span>`).join("");
 
-  // table with embedded rank
-  let rows = D.top.map((l, i) => ({ ...l, rank: i + 1 }));
-  let sortK = "rank", asc = true;
-
-  function esc(s){ return String(s ?? "").replace(/[&<>"]/g, c =>
-    ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c])); }
-
-  function render(list) {
-    document.querySelector("#tbl tbody").innerHTML = list.map(l => `
-      <tr>
-        <td>${l.rank}${l.unicorn ? '<span class="pill">UNICORN</span>' : ''}</td>
-        <td>${l.score}%</td>
-        <td><a href="${l.url}" target="_blank" rel="noopener">${esc(l.title)}</a>
-            <div class="reasons">${esc((l.reasons||[]).join("; "))}</div></td>
-        <td>${l.price ? "$" + l.price.toLocaleString() : "&mdash;"}</td>
-        <td>${l.total_time ? l.total_time.toLocaleString() : "&mdash;"}</td>
-        <td>${esc(l.model)}</td>
-        <td>${l.year ?? "&mdash;"}</td>
-        <td>${esc(l.location) || "&mdash;"}</td>
-        <td>${esc(l.source)}</td>
-      </tr>`).join("") || '<tr><td colspan="9">No matches this run.</td></tr>';
+  // reusable sortable/filterable table controller
+  function controller(tblSel, filterSel, data, rowFn) {
+    const rows = data.map((l, i) => ({ ...l, rank: i + 1 }));
+    const tbl = document.querySelector(tblSel);
+    const input = document.querySelector(filterSel);
+    const cols = tbl.querySelectorAll("th").length;
+    let sortK = "rank", asc = true;
+    function draw() {
+      const f = input.value.toLowerCase();
+      let list = rows.filter(l =>
+        (l.title + " " + l.model + " " + l.source + " " + (l.location||"")).toLowerCase().includes(f));
+      list.sort((a, b) => {
+        const x = a[sortK], y = b[sortK];
+        const v = (x == null) - (y == null) ||
+          (typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y)));
+        return asc ? v : -v;
+      });
+      tbl.querySelector("tbody").innerHTML = list.map(rowFn).join("")
+        || `<tr><td colspan="${cols}">Nothing here this run.</td></tr>`;
+      tbl.querySelectorAll("th").forEach(th => th.removeAttribute("aria-sort"));
+      const th = tbl.querySelector(`th[data-k="${sortK}"]`);
+      if (th) th.setAttribute("aria-sort", asc ? "ascending" : "descending");
+    }
+    tbl.querySelectorAll("th").forEach(th => th.addEventListener("click", () => {
+      const k = th.dataset.k;
+      if (sortK === k) asc = !asc; else { sortK = k; asc = (k === "rank"); }
+      draw();
+    }));
+    input.addEventListener("input", draw);
+    draw();
   }
 
-  function sortAndRender() {
-    const f = document.getElementById("filter").value.toLowerCase();
-    let list = rows.filter(l =>
-      (l.title + " " + l.model + " " + l.source + " " + (l.location||"")).toLowerCase().includes(f));
-    list.sort((a, b) => {
-      const x = a[sortK], y = b[sortK];
-      const v = (x == null) - (y == null) ||
-        (typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y)));
-      return asc ? v : -v;
-    });
-    render(list);
-    document.querySelectorAll("th").forEach(th =>
-      th.removeAttribute("aria-sort"));
-    const th = document.querySelector(`th[data-k="${sortK}"]`);
-    if (th) th.setAttribute("aria-sort", asc ? "ascending" : "descending");
-  }
+  const link = (l) => `<a href="${l.url}" target="_blank" rel="noopener">${esc(l.title)}</a>`;
+  const cell = (v) => v || v === 0 ? v.toLocaleString() : "&mdash;";
 
-  document.querySelectorAll("th").forEach(th => th.addEventListener("click", () => {
-    const k = th.dataset.k;
-    if (sortK === k) asc = !asc; else { sortK = k; asc = k === "rank"; }
-    sortAndRender();
+  controller("#tbl", "#filter", D.top, l => `
+    <tr>
+      <td>${l.rank}${l.unicorn ? '<span class="pill">UNICORN</span>' : ''}</td>
+      <td>${l.score}%</td>
+      <td>${link(l)}<div class="reasons">${esc((l.reasons||[]).join("; "))}</div></td>
+      <td>${l.price ? "$" + l.price.toLocaleString() : "&mdash;"}</td>
+      <td>${cell(l.total_time)}</td>
+      <td>${esc(l.model)}</td>
+      <td>${l.year ?? "&mdash;"}</td>
+      <td>${esc(l.location) || "&mdash;"}</td>
+      <td>${esc(l.source)}</td>
+    </tr>`);
+
+  controller("#tblA", "#filterA", D.auctions, l => `
+    <tr>
+      <td>${l.rank}</td>
+      <td>${l.matches ? '<span class="match">✓ matches</span>' : '&mdash;'}</td>
+      <td>${l.price ? "$" + l.price.toLocaleString() : "no bid yet"}</td>
+      <td>${l.bids ?? 0}</td>
+      <td>${link(l)}</td>
+      <td>${cell(l.total_time)}</td>
+      <td>${esc(l.model)}</td>
+      <td>${l.year ?? "&mdash;"}</td>
+      <td>${esc(l.location) || "&mdash;"}</td>
+      <td>${esc(l.status) || "&mdash;"}</td>
+    </tr>`);
+
+  // tab switching
+  document.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+    b.classList.add("active");
+    document.getElementById("tab-sale").classList.toggle("hidden", b.dataset.tab !== "sale");
+    document.getElementById("tab-auction").classList.toggle("hidden", b.dataset.tab !== "auction");
   }));
-  document.getElementById("filter").addEventListener("input", sortAndRender);
-  sortAndRender();
 </script>
 </body>
 </html>
@@ -881,6 +1015,19 @@ def main(debug: bool = False) -> None:
     print(f"\n  {len(kept)} listings passed filters; "
           f"{len(unicorns)} unicorn(s) ({len(new_unicorns)} new)")
 
+    # --- auctions (AircraftBidder): show ALL Cessna lots, flag the ones that
+    #     meet the buy criteria. These are kept separate from the for-sale list.
+    print("  fetching AircraftBidder (auctions) ...")
+    ab_html = _get(AIRCRAFTBIDDER_BROWSE)
+    auctions = parse_aircraftbidder(ab_html) if ab_html else []
+    for a in auctions:
+        score_listing(a)
+        a.matches = passes_hard_filters(a)
+    # matching lots first, then by score
+    auctions.sort(key=lambda x: (x.matches, x.score), reverse=True)
+    print(f"    {len(auctions)} Cessna auction lot(s); "
+          f"{sum(a.matches for a in auctions)} match criteria")
+
     html = build_email_html(top, new_unicorns)
     send_email(html)
 
@@ -909,7 +1056,7 @@ def main(debug: bool = False) -> None:
     if site_dir:
         os.makedirs(site_dir, exist_ok=True)
         with open(os.path.join(site_dir, "index.html"), "w") as f:
-            f.write(build_dashboard_html(top, unicorns, history))
+            f.write(build_dashboard_html(top, unicorns, history, auctions))
         # Tell GitHub Pages to serve the artifact as-is (skip Jekyll), so the
         # dashboard is never mistaken for a Jekyll site / README homepage.
         open(os.path.join(site_dir, ".nojekyll"), "w").close()
