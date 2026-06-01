@@ -1,8 +1,9 @@
 name: Daily Plane Finder
 
-# Runs the Cessna 172 finder once a day and on manual demand, then posts the
-# digest as a GitHub Issue. No secrets to configure — it uses the built-in
-# GITHUB_TOKEN. See README.md.
+# Runs the Cessna 172 finder once a day and on manual demand, publishes a web
+# dashboard to GitHub Pages, and opens a GitHub Issue only when a NEW unicorn
+# shows up. No secrets to configure — it uses the built-in GITHUB_TOKEN.
+# See README.md.
 
 on:
   schedule:
@@ -11,10 +12,11 @@ on:
     - cron: "0 12 * * *"
   workflow_dispatch: {}
 
-# Need to write the "seen" state file back and to open issues.
 permissions:
-  contents: write
-  issues: write
+  contents: write   # commit the seen/history state back
+  issues: write     # open unicorn-alert issues
+  pages: write      # deploy to GitHub Pages
+  id-token: write   # required by deploy-pages
 
 # Don't let a slow run overlap with the next scheduled one.
 concurrency:
@@ -24,6 +26,9 @@ concurrency:
 jobs:
   find-planes:
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
@@ -39,35 +44,51 @@ jobs:
 
       - name: Run plane finder
         env:
-          # Write the digest as Markdown so the next step can post it as an issue.
-          PF_DIGEST_MD: digest.md
+          PF_DIGEST_MD: digest.md        # markdown digest (for the issue)
+          PF_SITE_DIR: site              # static dashboard output dir
+          PF_HISTORY: plane_finder_history.json  # day-over-day trend, committed back
         run: python plane_finder.py
 
-      - name: Open digest issue
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload dashboard artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Open issue on new unicorn
+        # Only alert when there's a genuinely new unicorn — the dashboard is the
+        # day-to-day view, so we don't open a fresh issue every single run.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [[ ! -s digest.md ]]; then
-            echo "No digest produced; skipping issue."
-            exit 0
+          if grep -q "UNICORN ALERT" digest.md; then
+            gh issue create \
+              --title "🦄 New Cessna 172 unicorn — $(date -u +%Y-%m-%d)" \
+              --body-file digest.md \
+              --label plane-finder 2>/dev/null \
+            || gh issue create \
+              --title "🦄 New Cessna 172 unicorn — $(date -u +%Y-%m-%d)" \
+              --body-file digest.md
+          else
+            echo "No new unicorn; dashboard updated, no issue opened."
           fi
-          gh issue create \
-            --title "Cessna 172 digest — $(date -u +%Y-%m-%d)" \
-            --body-file digest.md \
-            --label plane-finder || \
-          gh issue create \
-            --title "Cessna 172 digest — $(date -u +%Y-%m-%d)" \
-            --body-file digest.md
 
-      - name: Persist "seen" state
-        # Commit the updated state file so the next run remembers which
-        # unicorns we've already alerted on. Skips cleanly if nothing changed.
+      - name: Persist state (seen + history)
+        # Commit updated state so the next run remembers seen unicorns and keeps
+        # the dashboard trend. Skips cleanly if nothing changed.
         run: |
-          if [[ -n "$(git status --porcelain plane_finder_seen.json)" ]]; then
+          changed="$(git status --porcelain plane_finder_seen.json plane_finder_history.json)"
+          if [[ -n "$changed" ]]; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add plane_finder_seen.json
-            git commit -m "chore: update plane finder seen state [skip ci]"
+            git add plane_finder_seen.json plane_finder_history.json
+            git commit -m "chore: update plane finder state [skip ci]"
             git push
           else
             echo "No state change to commit."
