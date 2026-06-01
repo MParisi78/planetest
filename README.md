@@ -25,11 +25,17 @@ US-based aircraft marketplaces, in priority order:
 
 | Source | Status | Notes |
 |--------|--------|-------|
-| **GlobalAir** | ✅ reliable | Reads structured schema.org data — exact price, total time, engine SMOH, location, avionics. |
-| **Barnstormers** | ✅ reliable | Parses each classified's ad text for price, specs, and location. |
+| **GlobalAir** | ✅ reliable | Fixed-price. Reads structured schema.org data — exact price, total time, engine SMOH, location, avionics. |
+| **Barnstormers** | ✅ reliable | Fixed-price. Parses each classified's ad text for price, specs, and location. |
+| **AircraftBidder** | ✅ reliable | **Auctions.** Cessna lots with current/starting bid, bid count, time/status, and specs. Shown on the dashboard's **Auctions** tab. |
 | Trade-A-Plane | ⚠️ often blocked | Frequently returns HTTP 403 to automated requests; parses automatically whenever reachable. |
 | Controller | ⚠️ often blocked | JavaScript-rendered / bot-walled. |
 | Aircraft Shopper Online (ASO) | ⚠️ often blocked | Returns HTTP 403 to automated requests. |
+
+The dashboard has two tabs: **For Sale** (fixed-price listings, ranked) and
+**Auctions** (every Cessna lot on AircraftBidder, with the ones meeting your
+buy criteria flagged **✓ matches**). Auction bids are legally binding and a
+buyer's premium is added on top — always inspect before bidding.
 
 Tuning knobs (env vars, also in `CONFIG`): `PF_MAX_DETAILS`, `PF_MAX_PAGES`,
 `PF_FETCH_DELAY`. The script fetches each listing's detail page (where price and
