@@ -11,6 +11,15 @@ on:
     # Format: minute hour day month weekday — always in UTC.
     - cron: "0 12 * * *"
   workflow_dispatch: {}
+  push:
+    branches: [main]
+    # Re-run the pipeline on every merge to main. The bot's state commits use
+    # [skip ci], so those pushes don't re-trigger. Only run when the finder,
+    # its deps, or this workflow change — not for docs-only edits.
+    paths:
+      - "plane_finder.py"
+      - "requirements.txt"
+      - ".github/workflows/daily-plane-finder.yml"
 
 permissions:
   contents: write   # commit the seen/history state back
