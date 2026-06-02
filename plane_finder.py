@@ -1053,7 +1053,9 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
   <p class="sub">Live & recent Cessna lots on
     <a href="https://auction.aircraftbidder.com/" target="_blank" rel="noopener">AircraftBidder</a>.
     Bids are legally binding and a buyer's premium is added on top — inspect before bidding.</p>
-  <input type="search" id="filterA" placeholder="Filter auctions by title, model, location...">
+  <input type="search" id="filterA" placeholder="Filter auctions by make, model, location...">
+  <select id="fMakeA"><option value="">All makes</option></select>
+  <select id="fSeatsA"><option value="">Any seats</option></select>
   <table id="tblA">
     <thead><tr>
       <th data-k="rank">#</th>
@@ -1062,7 +1064,9 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
       <th data-k="bids">Bids</th>
       <th data-k="title">Lot</th>
       <th data-k="total_time">TT</th>
+      <th data-k="make">Make</th>
       <th data-k="model">Model</th>
+      <th data-k="seats">Seats</th>
       <th data-k="year">Year</th>
       <th data-k="location">Location</th>
       <th data-k="status">Status</th>
@@ -1153,17 +1157,20 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
   const link = (l) => `<a href="${l.url || '#'}" target="_blank" rel="noopener">${esc(l.title)}</a>`;
   const cell = (v) => v || v === 0 ? v.toLocaleString() : "&mdash;";
 
-  // build both filter dropdowns from the makes / seat counts actually present
+  // build a tab's make / seats dropdowns from the makes & seat counts present
   const addOpt = (sel, val, label) => {
     const o = document.createElement("option");
     o.value = val; o.textContent = label; sel.appendChild(o);
   };
-  const fMake = document.getElementById("fMake");
-  [...new Set(D.top.map(l => l.make).filter(Boolean))].sort()
-    .forEach(m => addOpt(fMake, m, m));
-  const fSeats = document.getElementById("fSeats");
-  [...new Set(D.top.map(l => l.seats).filter(s => s != null))].sort((a, b) => a - b)
-    .forEach(s => addOpt(fSeats, s, s + "+ seats"));
+  function fillFilters(data, makeId, seatsId) {
+    const mk = document.getElementById(makeId), st = document.getElementById(seatsId);
+    [...new Set(data.map(l => l.make).filter(Boolean))].sort()
+      .forEach(m => addOpt(mk, m, m));
+    [...new Set(data.map(l => l.seats).filter(s => s != null))].sort((a, b) => a - b)
+      .forEach(s => addOpt(st, s, s + "+ seats"));
+  }
+  fillFilters(D.top, "fMake", "fSeats");
+  fillFilters(D.auctions, "fMakeA", "fSeatsA");
 
   controller("#tbl", "#filter", D.top, l => `
     <tr>
@@ -1181,7 +1188,7 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
     </tr>`, {
       controls: ["#fMake", "#fSeats"],
       extra: l => {
-        const mk = fMake.value, st = document.getElementById("fSeats").value;
+        const mk = document.getElementById("fMake").value, st = document.getElementById("fSeats").value;
         if (mk && (l.make || "") !== mk) return false;
         if (st && !(l.seats != null && l.seats >= +st)) return false;
         return true;
@@ -1196,11 +1203,22 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
       <td>${l.bids ?? 0}</td>
       <td>${link(l)}</td>
       <td>${cell(l.total_time)}</td>
+      <td>${esc(l.make) || "&mdash;"}</td>
       <td>${esc(l.model)}</td>
+      <td>${l.seats ?? "&mdash;"}</td>
       <td>${l.year ?? "&mdash;"}</td>
       <td>${esc(l.location) || "&mdash;"}</td>
       <td>${esc(l.status) || "&mdash;"}</td>
-    </tr>`);
+    </tr>`, {
+      controls: ["#fMakeA", "#fSeatsA"],
+      extra: l => {
+        const mk = document.getElementById("fMakeA").value;
+        const st = document.getElementById("fSeatsA").value;
+        if (mk && (l.make || "") !== mk) return false;
+        if (st && !(l.seats != null && l.seats >= +st)) return false;
+        return true;
+      }
+    });
 
   // tab switching
   document.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => {
