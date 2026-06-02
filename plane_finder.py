@@ -44,6 +44,14 @@ from email.mime.multipart import MIMEMultipart
 import requests
 from bs4 import BeautifulSoup
 
+# Craigslist serves RSS; we parse it with html.parser, so silence bs4's nag.
+try:
+    import warnings
+    from bs4 import XMLParsedAsHTMLWarning
+    warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
+except ImportError:
+    pass
+
 # =============================================================================
 # CONFIG  -- everything you'd want to tweak lives here
 # =============================================================================
@@ -439,9 +447,10 @@ def _listing_from_globalair(item: dict, url: str) -> Listing:
     )
 
 
-def parse_globalair(list_html: str) -> list[Listing]:
+def parse_globalair(list_html: str,
+                    base: str = "https://www.globalair.com/aircraft-for-sale/cessna-172"
+                    ) -> list[Listing]:
     out: list[Listing] = []
-    base = "https://www.globalair.com/aircraft-for-sale/cessna-172"
     pages = [list_html] if list_html else []
     # walk a few result pages so we have a real pool to rank, not just page 1
     for p in range(2, CONFIG["max_pages"] + 1):
@@ -480,7 +489,8 @@ def parse_barnstormers(list_html: str) -> list[Listing]:
     seen, details = set(), []
     for a in soup.find_all("a", href=True):
         href, text = a["href"], a.get_text(" ", strip=True)
-        if re.search(r"/classified-\d+", href) and "172" in text:
+        # the page is the Cessna category, so accept any model (year-stamped title)
+        if re.search(r"/classified-\d+", href) and re.search(r"\b(19|20)\d{2}\b", text):
             if href.startswith("/"):
                 href = "https://www.barnstormers.com" + href
             href = href.split("?")[0]
@@ -574,13 +584,60 @@ def parse_generic(source: str, html: str, base_url: str) -> list[Listing]:
     if not html:
         return out
     soup = BeautifulSoup(html, "html.parser")
+    seen = set()
     for a in soup.find_all("a"):
         text = a.get_text(" ", strip=True)
-        if "172" in text and re.search(r"\b(19|20)\d{2}\b", text):
+        low = text.lower()
+        # any make + a year in the link text = looks like a real listing
+        if (len(text) >= 8 and re.search(r"\b(19|20)\d{2}\b", text)
+                and any(mk in low for mk in _MAKES)):
             href = a.get("href", "")
             if href.startswith("/"):
                 href = base_url.rstrip("/") + href
+            if (text, href) in seen:
+                continue
+            seen.add((text, href))
             out.append(_listing_from_text(source, text, text, href))
+    return out
+
+
+# --- eBay Motors aircraft search (server-rendered results) --------------------
+def parse_ebay(html: str) -> list[Listing]:
+    out: list[Listing] = []
+    if not html:
+        return out
+    soup = BeautifulSoup(html, "html.parser")
+    for li in soup.select("li.s-item, li.s-card, div.s-item"):
+        t = li.select_one(".s-item__title, .s-card__title, [role=heading]")
+        a = li.select_one("a.s-item__link, a.s-card__link, a[href]")
+        p = li.select_one(".s-item__price, .s-card__price")
+        if not t or not a:
+            continue
+        title = re.sub(r"^\s*new listing\s*", "", t.get_text(" ", strip=True), flags=re.I).strip()
+        low = title.lower()
+        if not title or low.startswith("shop on ebay") or not any(mk in low for mk in _MAKES):
+            continue
+        body = f"{title} {p.get_text(' ', strip=True) if p else ''}"
+        out.append(_listing_from_text("eBay", title, body, a.get("href", "")))
+    return out
+
+
+# --- Craigslist regional RSS feeds (no auth, sparse but free) -----------------
+def parse_craigslist(rss: str) -> list[Listing]:
+    out: list[Listing] = []
+    if not rss:
+        return out
+    soup = BeautifulSoup(rss, "html.parser")   # html.parser lowercases the tags
+    for item in soup.find_all("item"):
+        te = item.find("title")
+        title = te.get_text(strip=True) if te else ""
+        de = item.find("description")
+        desc = de.get_text(" ", strip=True) if de else ""
+        low = (title + " " + desc).lower()
+        if not title or not any(mk in low for mk in _MAKES):
+            continue
+        href = item.get("rdf:about", "")
+        out.append(_listing_from_text("Craigslist", title, f"{title} {desc}", href))
     return out
 
 
@@ -727,27 +784,57 @@ def fetch_email_alerts() -> list[Listing]:
     return out
 
 
+# GlobalAir model search pages to walk (proven /aircraft-for-sale/{make}-{model}
+# pattern). Broadened beyond the 172 to pull a real pool. Extend via PF_GA_MODELS.
+GLOBALAIR_MODELS = (os.environ.get("PF_GA_MODELS") or
+                    "cessna-172,cessna-182,cessna-150,cessna-206,"
+                    "piper-cherokee,beechcraft-bonanza").split(",")
+
+# Craigslist regions to sweep (best-effort RSS). Extend via PF_CL_REGIONS.
+CRAIGSLIST_REGIONS = (os.environ.get("PF_CL_REGIONS") or
+                      "sfbay,losangeles,newyork,chicago,dallas,atlanta,"
+                      "denver,seattle,phoenix,miami").split(",")
+CRAIGSLIST_QUERY = os.environ.get("PF_CL_QUERY", "cessna")
+
+
 # Search URLs to hit each day. US-based marketplaces.
-# GlobalAir and Barnstormers parse reliably; Trade-A-Plane / Controller / ASO
-# often block automated requests (HTTP 403) — they're kept as targets so they
-# light up automatically whenever they're reachable. See README.
+# GlobalAir and Barnstormers parse reliably; Trade-A-Plane / Controller / ASO /
+# eBay / GovPlanet often block automated requests (HTTP 403) — they're kept as
+# targets so they light up automatically whenever they're reachable. See README.
 SEARCH_TARGETS = [
     ("GlobalAir",
-     "https://www.globalair.com/aircraft-for-sale/cessna-172",
-     parse_globalair),
+     f"https://www.globalair.com/aircraft-for-sale/{slug.strip()}",
+     (lambda h, b=f"https://www.globalair.com/aircraft-for-sale/{slug.strip()}":
+      parse_globalair(h, b)))
+    for slug in GLOBALAIR_MODELS if slug.strip()
+] + [
     ("Barnstormers",
      "https://www.barnstormers.com/category-17352-Cessna.html",
      parse_barnstormers),
+    # Broadened to all single-engine piston (was make=CESSNA&model_group=172).
     ("Trade-A-Plane",
      "https://www.trade-a-plane.com/search?category_level1=Single+Engine+Piston"
-     "&make=CESSNA&model_group=172+SERIES&s-type=aircraft",
+     "&s-type=aircraft",
      lambda h: parse_generic("Trade-A-Plane", h, "https://www.trade-a-plane.com")),
     ("Controller",
-     "https://www.controller.com/listings/for-sale/cessna/172/aircraft",
+     "https://www.controller.com/listings/for-sale/aircraft/single-engine-piston",
      lambda h: parse_generic("Controller", h, "https://www.controller.com")),
     ("ASO",
-     "https://www.aso.com/listings/aircraft-for-sale/Cessna/172",
+     "https://www.aso.com/listings/aircraft-for-sale/Single-Engine-Piston",
      lambda h: parse_generic("ASO", h, "https://www.aso.com")),
+    # eBay Motors: airplanes category (26429), keyword-broad.
+    ("eBay",
+     "https://www.ebay.com/sch/i.html?_sacat=26429&_nkw=cessna&_ipg=120",
+     parse_ebay),
+    # Government surplus aircraft lots (best-effort; often JS/blocked).
+    ("GovPlanet",
+     "https://www.govplanet.com/c/aircraft",
+     lambda h: parse_generic("GovPlanet", h, "https://www.govplanet.com")),
+] + [
+    ("Craigslist",
+     f"https://{r.strip()}.craigslist.org/search/sss?format=rss&query={CRAIGSLIST_QUERY}",
+     parse_craigslist)
+    for r in CRAIGSLIST_REGIONS if r.strip()
 ]
 
 

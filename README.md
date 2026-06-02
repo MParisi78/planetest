@@ -25,12 +25,22 @@ US-based aircraft marketplaces, in priority order:
 
 | Source | Status | Notes |
 |--------|--------|-------|
-| **GlobalAir** | ✅ reliable | Fixed-price. Reads structured schema.org data — exact price, total time, engine SMOH, location, avionics. |
-| **Barnstormers** | ✅ reliable | Fixed-price. Parses each classified's ad text for price, specs, and location. |
+| **GlobalAir** | ✅ reliable | Fixed-price. Reads structured schema.org data — exact price, total time, engine SMOH, location, avionics. Walks several model search pages (`PF_GA_MODELS`), not just the 172. |
+| **Barnstormers** | ✅ reliable | Fixed-price. Parses each classified's ad text for price, specs, and location (all Cessna models). |
 | **AircraftBidder** | ✅ reliable | **Auctions.** Cessna lots with current/starting bid, bid count, time/status, and specs. Shown on the dashboard's **Auctions** tab. |
-| Trade-A-Plane | ⚠️ often blocked | Frequently returns HTTP 403 to automated requests; parses automatically whenever reachable. |
+| Trade-A-Plane | ⚠️ often blocked | All single-engine piston. Frequently returns HTTP 403; parses automatically whenever reachable. |
 | Controller | ⚠️ often blocked | JavaScript-rendered / bot-walled. |
 | Aircraft Shopper Online (ASO) | ⚠️ often blocked | Returns HTTP 403 to automated requests. |
+| eBay (Motors → Airplanes) | ⚠️ often blocked | Server-rendered search; commonly rate-limits/403s automated requests. |
+| Craigslist | ⚠️ best-effort | Per-region RSS sweep (`PF_CL_REGIONS`, `PF_CL_QUERY`). Sparse and noisy; no auth. |
+| GovPlanet / gov surplus | ⚠️ best-effort | Government surplus aircraft lots; often JS-rendered. |
+
+> **Facebook Marketplace is intentionally not included.** It requires a
+> logged-in session and renders listings with JavaScript, blocks bots
+> aggressively, and scraping it violates Facebook's Terms of Service — none of
+> which this scraper (plain HTTP + HTML parsing on a CI runner) can or should do.
+> The reliable way to pull in other makes/models is the broadened scrapers above
+> plus your saved-search **email alerts**, which are never blocked.
 
 The dashboard has two tabs: **For Sale** (fixed-price listings, ranked) and
 **Auctions** (every Cessna lot on AircraftBidder, with the ones meeting your
