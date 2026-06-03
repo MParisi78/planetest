@@ -6,13 +6,30 @@ GitHub Pages (plus a GitHub Issue alert for new unicorns).
 Runs free on GitHub Actions — no computer needs to be on.
 
 ## What it looks for
-- Cessna 172, **1975 or newer**
+- Aircraft **1956 or newer** (the 172's first year — so vintage straight-tails show up too; override with `PF_MIN_YEAR`)
 - **US-based** sellers (listings located abroad are dropped)
 - **No reported damage history**
 - **Low total time** preferred
 - **Under $75,000** — unless it's a unicorn worth stretching for (hard ceiling $140k)
 
-A *unicorn* = either a 1975+ clean, low-time 172 that somehow lists at/under $75k,
+### ★ Desirable model-years (auto-flagged)
+The finder tags collectible / sought-after Cessna 172 variants with a purple **★ badge**,
+gives them a score bump, and you can show only them with the **★ Highlights only**
+toggle on either tab. Current rules (`_highlight()` in `plane_finder.py` — tweak freely):
+
+| Badge | What it catches | Why it's prized |
+|-------|-----------------|-----------------|
+| **Straight-tail classic** | 1956–1959 172 | Collectible vertical-tail original; smooth Continental O-300 six |
+| **Pre-H2AD O-320** | 1968–1976 (incl. the '74 172M) | Bulletproof Lycoming O-320-E2D engine years |
+| **172P era** | 1981–1986 / 172P | 160hp, 28-gal fuel, higher useful load — refined last of the line |
+| **Hawk XP** | R172K | 195hp fuel-injected Continental + constant-speed prop |
+| **172RG Cutlass** | 172RG | Retractable gear, 180hp — faster cruiser |
+| **Restart R/S** | 172R / 172S (1996+) | Fuel-injected IO-360, modern airframe, often glass |
+
+It also adds a **⚠ caution** note to **1977–1980 172N** listings — the original
+O-320-**H2AD** had camshaft/lifter issues; verify the service-bulletin fix or an engine upgrade.
+
+A *unicorn* = either a clean, low-time 172 that somehow lists at/under $75k,
 or a late-model 172R/172S with very low time and no damage (the "won't outgrow it" plane).
 
 Each match gets a **score from 0–100%** (a whole-number percentage of the best

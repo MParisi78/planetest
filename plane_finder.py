@@ -57,7 +57,10 @@ except ImportError:
 # =============================================================================
 CONFIG = {
     # --- search criteria ---
-    "min_year": 1975,
+    # Year floor widened to 1956 (the 172's first year) so vintage classics like
+    # straight-tails show up. Override with PF_MIN_YEAR. Desirable model-years are
+    # flagged + score-boosted via _highlight(), independent of this floor.
+    "min_year": int(os.environ.get("PF_MIN_YEAR", "1956")),
     "price_ceiling": 75_000,        # your hard budget
     "unicorn_price_stretch": 140_000,  # a true unicorn may justify going this high
     "max_total_time": 6_000,        # hours; above this we down-score (not exclude)
@@ -71,6 +74,7 @@ CONFIG = {
         "ifr_ready": 1.5,      # already IFR / Garmin / ADS-B
         "no_damage": 2.5,      # clean history
         "year": 1.0,           # newer scores higher
+        "highlight": 2.0,      # a collectible/desirable 172 variant or engine-era
     },
 
     # --- how many to send ---
@@ -146,6 +150,7 @@ class Listing:
     location: str = ""
     score: float = 0.0
     unicorn: bool = False
+    highlight: str = ""        # desirable variant/year badge, e.g. "Straight-tail classic"
     from_alert: bool = False   # came from a saved-search alert email (shown unfiltered)
     # auction-specific (AircraftBidder)
     auction: bool = False
@@ -859,6 +864,45 @@ def passes_hard_filters(l: Listing) -> bool:
     return True
 
 
+def _highlight(l: Listing) -> tuple[str, str] | None:
+    """Flag collectible/desirable Cessna 172 variants & engine eras.
+
+    Returns (badge, why) or None. Encodes the type community's lore; tweak freely.
+    """
+    md = (l.model or "").upper()
+    yr = l.year
+    title = (l.title or "").lower()
+    is172 = "172" in md or "skyhawk" in title
+
+    if "XP" in md or "R172K" in md:
+        return ("Hawk XP", "195hp fuel-injected Continental + constant-speed prop — the hot-rod 172")
+    if "RG" in md or "CUTLASS" in md:
+        return ("172RG Cutlass", "Retractable gear, 180hp — notably faster cruiser")
+    if md in ("172R", "172S") or (is172 and yr and yr >= 1996):
+        return ("Restart R/S", "Fuel-injected IO-360, modern airframe — often glass-panel")
+    if not is172:
+        return None
+    if yr and 1956 <= yr <= 1959:
+        return ("Straight-tail classic", f"{yr} straight-tail 172 — collectible; smooth Continental O-300 six")
+    if yr and 1968 <= yr <= 1976:
+        return ("Pre-H2AD O-320", "'68–'76 Lycoming O-320-E2D — the bulletproof pre-H2AD engine years")
+    if md == "172P" or (yr and 1981 <= yr <= 1986):
+        return ("172P era", "160hp O-320-D2J, 28-gal fuel, higher useful load — refined last of the line")
+    return None
+
+
+def _caution(l: Listing) -> str | None:
+    """A buyer's heads-up for the one 172 era worth scrutinizing."""
+    md = (l.model or "").upper()
+    yr = l.year
+    title = (l.title or "").lower()
+    is172 = "172" in md or "skyhawk" in title
+    is_xp = "XP" in md or "R172K" in md or "hawk xp" in title
+    if is172 and not is_xp and yr and 1977 <= yr <= 1980:
+        return "1977–80 172N: original O-320-H2AD had cam/lifter issues — confirm the SB fix or an engine upgrade"
+    return None
+
+
 def score_listing(l: Listing) -> None:
     w = CONFIG["weights"]
     max_score = sum(w.values())  # full marks on every weighted factor
@@ -899,6 +943,15 @@ def score_listing(l: Listing) -> None:
         yscore = max(0.0, min(1.0, (l.year - CONFIG["min_year"]) / (2010 - CONFIG["min_year"])))
         s += w["year"] * yscore
 
+    hl = _highlight(l)
+    if hl:
+        l.highlight = hl[0]
+        s += w["highlight"]
+        reasons.insert(0, f"★ {hl[0]}: {hl[1]}")
+    caution = _caution(l)
+    if caution:
+        reasons.append(f"⚠ {caution}")
+
     # express the score as a whole-number percentage of the best possible score
     l.score = round(s / max_score * 100) if max_score else 0
     l.reasons = reasons
@@ -909,7 +962,7 @@ def score_listing(l: Listing) -> None:
             and l.year and l.year >= CONFIG["min_year"] \
             and l.total_time is not None and l.total_time < 4000:
         l.unicorn = True
-        l.reasons.insert(0, "UNICORN: 1975+, clean, low-time, AND under budget")
+        l.reasons.insert(0, "UNICORN: clean, low-time, AND under budget")
     elif is_clean and l.model in ("172R", "172S") \
             and l.total_time is not None and l.total_time < 2000:
         l.unicorn = True
@@ -1080,6 +1133,10 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
   .reasons { color: #777; font-size: 12px; }
   .pill { display: inline-block; background: #b8860b; color: #fff; border-radius: 6px;
           padding: 1px 6px; font-size: 11px; margin-left: 6px; }
+  .star { display: inline-block; background: #6f42c1; color: #fff; border-radius: 6px;
+          padding: 1px 6px; font-size: 11px; margin-left: 6px; }
+  label.chk { font-size: 14px; color: #555; margin-left: 4px; cursor: pointer; user-select: none; }
+  @media (prefers-color-scheme: dark) { label.chk { color: #bbb; } }
   .spark { display: flex; align-items: flex-end; gap: 3px; height: 48px; margin-top: 6px; }
   .spark span { width: 8px; background: #6db3ff; border-radius: 2px 2px 0 0; }
   .tabs { display: flex; gap: 6px; margin: 8px 0 16px; border-bottom: 1px solid #ddd; }
@@ -1119,6 +1176,7 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
   <select id="fMake"><option value="">All makes</option></select>
   <select id="fModel"><option value="">All models</option></select>
   <select id="fSeats"><option value="">Any seats</option></select>
+  <input type="checkbox" id="fStar"><label class="chk" for="fStar">★ Highlights only</label>
   <table id="tbl">
     <thead><tr>
       <th data-k="rank">#</th>
@@ -1145,6 +1203,7 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
   <select id="fMakeA"><option value="">All makes</option></select>
   <select id="fModelA"><option value="">All models</option></select>
   <select id="fSeatsA"><option value="">Any seats</option></select>
+  <input type="checkbox" id="fStarA"><label class="chk" for="fStarA">★ Highlights only</label>
   <table id="tblA">
     <thead><tr>
       <th data-k="rank">#</th>
@@ -1216,7 +1275,7 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
     function draw() {
       const f = input.value.toLowerCase();
       let list = rows.filter(l =>
-        (l.title + " " + (l.make||"") + " " + l.model + " " + l.source + " " + (l.location||""))
+        (l.title + " " + (l.make||"") + " " + l.model + " " + (l.highlight||"") + " " + l.source + " " + (l.location||""))
           .toLowerCase().includes(f) && (!opts.extra || opts.extra(l)));
       list.sort((a, b) => {
         const x = a[sortK], y = b[sortK];
@@ -1266,7 +1325,7 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
 
   controller("#tbl", "#filter", D.top, l => `
     <tr>
-      <td>${l.rank}${l.unicorn ? '<span class="pill">UNICORN</span>' : ''}</td>
+      <td>${l.rank}${l.unicorn ? '<span class="pill">UNICORN</span>' : ''}${l.highlight ? '<span class="star">★ '+esc(l.highlight)+'</span>' : ''}</td>
       <td>${l.score}%</td>
       <td>${link(l)}<div class="reasons">${esc((l.reasons||[]).join("; "))}</div></td>
       <td>${l.price ? "$" + l.price.toLocaleString() : "&mdash;"}</td>
@@ -1278,7 +1337,7 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
       <td>${esc(l.location) || "&mdash;"}</td>
       <td>${esc(l.source)}</td>
     </tr>`, {
-      controls: ["#fMake", "#fModel", "#fSeats"],
+      controls: ["#fMake", "#fModel", "#fSeats", "#fStar"],
       extra: l => {
         const mk = document.getElementById("fMake").value,
               md = document.getElementById("fModel").value,
@@ -1286,6 +1345,7 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
         if (mk && (l.make || "") !== mk) return false;
         if (md && (l.model || "") !== md) return false;
         if (st && !(l.seats != null && l.seats >= +st)) return false;
+        if (document.getElementById("fStar").checked && !l.highlight) return false;
         return true;
       }
     });
@@ -1293,7 +1353,7 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
   controller("#tblA", "#filterA", D.auctions, l => `
     <tr>
       <td>${l.rank}</td>
-      <td>${l.matches ? '<span class="match">✓ matches</span>' : '&mdash;'}</td>
+      <td>${l.matches ? '<span class="match">✓ matches</span>' : '&mdash;'}${l.highlight ? '<span class="star">★ '+esc(l.highlight)+'</span>' : ''}</td>
       <td>${l.price ? "$" + l.price.toLocaleString() : "no bid yet"}</td>
       <td>${l.bids ?? 0}</td>
       <td>${link(l)}</td>
@@ -1305,11 +1365,12 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
       <td>${esc(l.location) || "&mdash;"}</td>
       <td>${esc(l.status) || "&mdash;"}</td>
     </tr>`, {
-      controls: ["#fMakeA", "#fModelA", "#fSeatsA"],
+      controls: ["#fMakeA", "#fModelA", "#fSeatsA", "#fStarA"],
       extra: l => {
         const mk = document.getElementById("fMakeA").value,
               md = document.getElementById("fModelA").value,
               st = document.getElementById("fSeatsA").value;
+        if (document.getElementById("fStarA").checked && !l.highlight) return false;
         if (mk && (l.make || "") !== mk) return false;
         if (md && (l.model || "") !== md) return false;
         if (st && !(l.seats != null && l.seats >= +st)) return false;
