@@ -19,12 +19,16 @@ toggle on either tab. Current rules (`_highlight()` in `plane_finder.py` — twe
 
 | Badge | What it catches | Why it's prized |
 |-------|-----------------|-----------------|
-| **Straight-tail classic** | 1956–1959 172 | Collectible vertical-tail original; smooth Continental O-300 six |
-| **Pre-H2AD O-320** | 1968–1976 (incl. the '74 172M) | Bulletproof Lycoming O-320-E2D engine years |
-| **172P era** | 1981–1986 / 172P | 160hp, 28-gal fuel, higher useful load — refined last of the line |
+| **Straight-tail classic** | 1956–1959 172 or 182 | Collectible vertical-tail original; smooth Continental six |
+| **Pre-H2AD O-320** | 172, 1968–1976 (incl. the '74 172M) | Bulletproof Lycoming O-320-E2D engine years |
+| **172P era** | 172, 1981–1986 / 172P | 160hp, 28-gal fuel, higher useful load — refined last of the line |
 | **Hawk XP** | R172K | 195hp fuel-injected Continental + constant-speed prop |
 | **172RG Cutlass** | 172RG | Retractable gear, 180hp — faster cruiser |
 | **Restart R/S** | 172R / 172S (1996+) | Fuel-injected IO-360, modern airframe, often glass |
+| **182P sweet spot** | 182, 1972–1976 / 182P | Well-equipped, strong useful load — the popular Skylane years |
+| **182R era** | 182, 1981–1986 / 182R | Most refined carbureted O-470, big useful load |
+| **Skylane RG** | R182 / TR182 | Retractable (often turbo) — markedly faster |
+| **Restart S/T** | 182S / 182T (1997+) | Fuel-injected IO-540, modern airframe, often G1000 glass |
 
 It also adds a **⚠ caution** note to **1977–1980 172N** listings — the original
 O-320-**H2AD** had camshaft/lifter issues; verify the service-bulletin fix or an engine upgrade.

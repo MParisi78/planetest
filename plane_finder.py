@@ -865,7 +865,7 @@ def passes_hard_filters(l: Listing) -> bool:
 
 
 def _highlight(l: Listing) -> tuple[str, str] | None:
-    """Flag collectible/desirable Cessna 172 variants & engine eras.
+    """Flag collectible/desirable Cessna 172 & 182 variants and engine eras.
 
     Returns (badge, why) or None. Encodes the type community's lore; tweak freely.
     """
@@ -873,21 +873,38 @@ def _highlight(l: Listing) -> tuple[str, str] | None:
     yr = l.year
     title = (l.title or "").lower()
     is172 = "172" in md or "skyhawk" in title
+    is182 = "182" in md or "skylane" in title
 
-    if "XP" in md or "R172K" in md:
-        return ("Hawk XP", "195hp fuel-injected Continental + constant-speed prop — the hot-rod 172")
-    if "RG" in md or "CUTLASS" in md:
-        return ("172RG Cutlass", "Retractable gear, 180hp — notably faster cruiser")
-    if md in ("172R", "172S") or (is172 and yr and yr >= 1996):
-        return ("Restart R/S", "Fuel-injected IO-360, modern airframe — often glass-panel")
-    if not is172:
+    # --- 172 Skyhawk family ---
+    if is172:
+        if "XP" in md or "R172K" in md:
+            return ("Hawk XP", "195hp fuel-injected Continental + constant-speed prop — the hot-rod 172")
+        if "RG" in md or "CUTLASS" in md:
+            return ("172RG Cutlass", "Retractable gear, 180hp — notably faster cruiser")
+        if md in ("172R", "172S") or (yr and yr >= 1996):
+            return ("Restart R/S", "Fuel-injected IO-360, modern airframe — often glass-panel")
+        if yr and 1956 <= yr <= 1959:
+            return ("Straight-tail classic", f"{yr} straight-tail 172 — collectible; smooth Continental O-300 six")
+        if yr and 1968 <= yr <= 1976:
+            return ("Pre-H2AD O-320", "'68–'76 Lycoming O-320-E2D — the bulletproof pre-H2AD engine years")
+        if md == "172P" or (yr and 1981 <= yr <= 1986):
+            return ("172P era", "160hp O-320-D2J, 28-gal fuel, higher useful load — refined last of the line")
         return None
-    if yr and 1956 <= yr <= 1959:
-        return ("Straight-tail classic", f"{yr} straight-tail 172 — collectible; smooth Continental O-300 six")
-    if yr and 1968 <= yr <= 1976:
-        return ("Pre-H2AD O-320", "'68–'76 Lycoming O-320-E2D — the bulletproof pre-H2AD engine years")
-    if md == "172P" or (yr and 1981 <= yr <= 1986):
-        return ("172P era", "160hp O-320-D2J, 28-gal fuel, higher useful load — refined last of the line")
+
+    # --- 182 Skylane family (more power & useful load than the 172) ---
+    if is182:
+        if "RG" in md or "R182" in md or "TR182" in md or "skylane rg" in title:
+            return ("Skylane RG", "Retractable gear (often turbo) — markedly faster cruiser")
+        if md in ("182S", "182T") or (yr and yr >= 1997):
+            return ("Restart S/T", "Fuel-injected Lycoming IO-540, modern airframe — often G1000 glass")
+        if yr and 1956 <= yr <= 1959:
+            return ("Straight-tail classic", f"{yr} straight-tail 182 — collectible; smooth Continental O-470 six")
+        if md == "182P" or (yr and 1972 <= yr <= 1976):
+            return ("182P sweet spot", "'72–'76 182P — well-equipped, strong useful load; the popular years")
+        if md == "182R" or (yr and 1981 <= yr <= 1986):
+            return ("182R era", "Most refined carbureted O-470 — big useful load, last of the pre-restart line")
+        return None
+
     return None
 
 
