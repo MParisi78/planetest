@@ -251,11 +251,22 @@ def _render(url: str, settle_ms: int = 4000, timeout_ms: int = 45000) -> str:
                 except Exception:                  # noqa: BLE001
                     pass
             page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-            # wait out a Cloudflare/DataDome interstitial (it reloads to real content)
-            for _ in range(15):                    # up to ~30s
+            # wait out a Cloudflare/DataDome interstitial (it reloads to real content),
+            # nudging a Turnstile checkbox if one is present (managed challenge)
+            for _ in range(20):                    # up to ~40s
                 page.wait_for_timeout(2000)
                 if not _looks_challenged(page.content(), page.title()):
                     break
+                try:
+                    page.mouse.move(400 + _ * 7, 300 + _ * 5)   # a little human motion
+                    for fr in page.frames:
+                        if "challenges.cloudflare.com" in (fr.url or ""):
+                            box = fr.query_selector(
+                                "input[type=checkbox], .cb-lb label, #challenge-stage")
+                            if box:
+                                box.click(timeout=2000)
+                except Exception:                  # noqa: BLE001 - click is best-effort
+                    pass
             try:
                 page.wait_for_load_state("networkidle", timeout=12000)
             except Exception:                      # noqa: BLE001
