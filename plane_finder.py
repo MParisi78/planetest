@@ -199,8 +199,20 @@ def _render_enabled() -> bool:
     return os.environ.get("PF_RENDER", "1") != "0" and _PW["ok"]
 
 
+def _looks_challenged(html: str, title: str) -> bool:
+    """True if the page is still a Cloudflare/DataDome bot challenge, not content."""
+    t, h = (title or "").lower(), (html or "").lower()
+    return ("just a moment" in t or "attention required" in t
+            or "enable javascript and cookies" in h or "cf-challenge" in h
+            or "/cdn-cgi/challenge" in h or "datadome" in h and "captcha" in h)
+
+
 def _render(url: str, settle_ms: int = 4000, timeout_ms: int = 45000) -> str:
-    """Load a URL in headless Chromium and return the rendered HTML ('' on failure)."""
+    """Load a URL in a stealthed browser, wait out any JS bot-challenge, return HTML.
+
+    Headed Chromium under xvfb (PF_HEADED=1) clears Cloudflare's non-interactive
+    challenge far more often than headless. Returns '' on failure.
+    """
     if not _render_enabled():
         return ""
     try:
@@ -208,25 +220,45 @@ def _render(url: str, settle_ms: int = 4000, timeout_ms: int = 45000) -> str:
             _PW["started"] = True
             from playwright.sync_api import sync_playwright
             _PW["p"] = sync_playwright().start()
-            _PW["browser"] = _PW["p"].chromium.launch(
-                headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
+            headless = os.environ.get("PF_HEADED", "0") == "0"
+            launch = dict(headless=headless,
+                          args=["--no-sandbox", "--disable-blink-features=AutomationControlled",
+                                "--disable-dev-shm-usage"])
+            channel = os.environ.get("PF_BROWSER_CHANNEL")  # e.g. "chrome" for real Chrome
+            if channel:
+                launch["channel"] = channel
+            _PW["browser"] = _PW["p"].chromium.launch(**launch)
             _PW["ctx"] = _PW["browser"].new_context(
                 user_agent=CONFIG["user_agent"], viewport={"width": 1366, "height": 900},
                 locale="en-US", extra_http_headers={
                     "Accept-Language": "en-US,en;q=0.9",
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 })
-            # light stealth: hide the obvious headless/automation tells
             _PW["ctx"].add_init_script(
                 "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
                 "Object.defineProperty(navigator,'languages',{get:()=>['en-US','en']});"
-                "Object.defineProperty(navigator,'plugins',{get:()=>[1,2,3]});")
+                "Object.defineProperty(navigator,'plugins',{get:()=>[1,2,3,4,5]});"
+                "window.chrome={runtime:{}};")
         page = _PW["ctx"].new_page()
         try:
+            try:                                   # heavier stealth if the plugin is present
+                from playwright_stealth import Stealth
+                Stealth().apply_stealth_sync(page)
+            except Exception:                      # noqa: BLE001
+                try:
+                    from playwright_stealth import stealth_sync
+                    stealth_sync(page)
+                except Exception:                  # noqa: BLE001
+                    pass
             page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-            try:                                   # let XHR-loaded listings arrive
+            # wait out a Cloudflare/DataDome interstitial (it reloads to real content)
+            for _ in range(15):                    # up to ~30s
+                page.wait_for_timeout(2000)
+                if not _looks_challenged(page.content(), page.title()):
+                    break
+            try:
                 page.wait_for_load_state("networkidle", timeout=12000)
-            except Exception:                      # noqa: BLE001 - networkidle can time out
+            except Exception:                      # noqa: BLE001
                 pass
             page.wait_for_timeout(settle_ms)
             return page.content()
