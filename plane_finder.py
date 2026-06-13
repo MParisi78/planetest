@@ -188,6 +188,59 @@ def _get(url: str, referer: str | None = None) -> str | None:
     return None
 
 
+# --- Playwright renderer: a real headless browser for JS / bot-walled sites ----
+# Trade-A-Plane and Controller serve a JS challenge that 403s plain requests.
+# A real Chromium gets the rendered HTML. Enabled in CI (workflow installs it);
+# falls back cleanly to "" anywhere Playwright isn't available or is turned off.
+_PW: dict = {"started": False, "p": None, "browser": None, "ctx": None, "ok": True}
+
+
+def _render_enabled() -> bool:
+    return os.environ.get("PF_RENDER", "1") != "0" and _PW["ok"]
+
+
+def _render(url: str, settle_ms: int = 2500, timeout_ms: int = 35000) -> str:
+    """Load a URL in headless Chromium and return the rendered HTML ('' on failure)."""
+    if not _render_enabled():
+        return ""
+    try:
+        if not _PW["started"]:
+            _PW["started"] = True
+            from playwright.sync_api import sync_playwright
+            _PW["p"] = sync_playwright().start()
+            _PW["browser"] = _PW["p"].chromium.launch(
+                headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
+            _PW["ctx"] = _PW["browser"].new_context(
+                user_agent=CONFIG["user_agent"], viewport={"width": 1366, "height": 900},
+                locale="en-US")
+        page = _PW["ctx"].new_page()
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            page.wait_for_timeout(settle_ms)   # let listings hydrate
+            return page.content()
+        finally:
+            page.close()
+    except ImportError:
+        print("  [warn] Playwright not installed; skipping rendered fetch "
+              "(pip install playwright && playwright install chromium)")
+        _PW["ok"] = False
+    except Exception as e:  # noqa: BLE001 - never let a render error kill the run
+        print(f"  [warn] render failed for {url}: {e}")
+    return ""
+
+
+def _render_close() -> None:
+    try:
+        if _PW["browser"]:
+            _PW["browser"].close()
+        if _PW["p"]:
+            _PW["p"].stop()
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        _PW.update(started=False, p=None, browser=None, ctx=None)
+
+
 def _num(text: str) -> int | None:
     """Pull the first integer out of a messy string like '$74,500' or '3,150 TT'."""
     if not text:
@@ -606,6 +659,55 @@ def parse_generic(source: str, html: str, base_url: str) -> list[Listing]:
     return out
 
 
+def parse_cards(source: str, html: str, base: str, render=None) -> list[Listing]:
+    """Parse rendered search-result pages (Trade-A-Plane, Controller).
+
+    Each listing's nearest container is used as the body, so price/TT/SMOH/damage
+    on the card get captured. If a `render` fn is given, a capped number of detail
+    pages are loaded for richer specs (notably engine SMOH).
+    """
+    out: list[Listing] = []
+    if not html:
+        return out
+    cap = int(os.environ.get("PF_RENDER_DETAILS", "12"))
+    soup = BeautifulSoup(html, "html.parser")
+    cards, seen = [], set()
+    for a in soup.find_all("a", href=True):
+        text = a.get_text(" ", strip=True)
+        low = text.lower()
+        if (len(text) < 8 or not re.search(r"\b(19|20)\d{2}\b", text)
+                or not any(mk in low for mk in _MAKES)):
+            continue
+        href = a["href"]
+        if href.startswith("/"):
+            href = base.rstrip("/") + href
+        if href in seen:
+            continue
+        seen.add(href)
+        # walk up to the nearest listing container for price/specs context
+        body, node = text, a
+        for _ in range(4):
+            node = node.parent
+            if node is None:
+                break
+            if node.name in ("td", "tr", "li", "article", "div", "section"):
+                t = node.get_text(" ", strip=True)
+                if 20 < len(t) < 800:
+                    body = t
+                    break
+        cards.append((text, href, body))
+
+    for i, (title, href, body) in enumerate(cards):
+        full = body
+        if render and i < cap:
+            detail = render(href)
+            if detail:
+                # keep the card text (price) AND add the detail page (SMOH, etc.)
+                full = body + " " + BeautifulSoup(detail, "html.parser").get_text(" ", strip=True)[:5000]
+        out.append(_listing_from_text(source, title, full, href))
+    return out
+
+
 # --- eBay Motors aircraft search (server-rendered results) --------------------
 def parse_ebay(html: str) -> list[Listing]:
     out: list[Listing] = []
@@ -816,14 +918,17 @@ SEARCH_TARGETS = [
     ("Barnstormers",
      "https://www.barnstormers.com/category-17352-Cessna.html",
      parse_barnstormers),
-    # Broadened to all single-engine piston (was make=CESSNA&model_group=172).
+    # Rendered with Playwright (4th element True) to get past the JS/bot wall;
+    # parse_cards then loads a capped number of detail pages for engine SMOH.
     ("Trade-A-Plane",
      "https://www.trade-a-plane.com/search?category_level1=Single+Engine+Piston"
      "&s-type=aircraft",
-     lambda h: parse_generic("Trade-A-Plane", h, "https://www.trade-a-plane.com")),
+     lambda h: parse_cards("Trade-A-Plane", h, "https://www.trade-a-plane.com", render=_render),
+     True),
     ("Controller",
      "https://www.controller.com/listings/for-sale/aircraft/single-engine-piston",
-     lambda h: parse_generic("Controller", h, "https://www.controller.com")),
+     lambda h: parse_cards("Controller", h, "https://www.controller.com", render=_render),
+     True),
     ("ASO",
      "https://www.aso.com/listings/aircraft-for-sale/Single-Engine-Piston",
      lambda h: parse_generic("ASO", h, "https://www.aso.com")),
@@ -1201,6 +1306,7 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
       <th data-k="title">Listing</th>
       <th data-k="price">Price</th>
       <th data-k="total_time">TT</th>
+      <th data-k="engine_smoh">SMOH</th>
       <th data-k="make">Make</th>
       <th data-k="model">Model</th>
       <th data-k="seats">Seats</th>
@@ -1229,6 +1335,7 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
       <th data-k="bids">Bids</th>
       <th data-k="title">Lot</th>
       <th data-k="total_time">TT</th>
+      <th data-k="engine_smoh">SMOH</th>
       <th data-k="make">Make</th>
       <th data-k="model">Model</th>
       <th data-k="seats">Seats</th>
@@ -1347,6 +1454,7 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
       <td>${link(l)}<div class="reasons">${esc((l.reasons||[]).join("; "))}</div></td>
       <td>${l.price ? "$" + l.price.toLocaleString() : "&mdash;"}</td>
       <td>${cell(l.total_time)}</td>
+      <td>${cell(l.engine_smoh)}</td>
       <td>${esc(l.make) || "&mdash;"}</td>
       <td>${esc(l.model)}</td>
       <td>${l.seats ?? "&mdash;"}</td>
@@ -1375,6 +1483,7 @@ def build_dashboard_html(top: list[Listing], unicorns: list[Listing],
       <td>${l.bids ?? 0}</td>
       <td>${link(l)}</td>
       <td>${cell(l.total_time)}</td>
+      <td>${cell(l.engine_smoh)}</td>
       <td>${esc(l.make) || "&mdash;"}</td>
       <td>${esc(l.model)}</td>
       <td>${l.seats ?? "&mdash;"}</td>
@@ -1436,9 +1545,11 @@ def main(debug: bool = False) -> None:
     print(f"Plane Finder run @ {dt.datetime.now():%Y-%m-%d %H:%M}")
     all_listings: list[Listing] = []
 
-    for name, url, parser in SEARCH_TARGETS:
-        print(f"  fetching {name} ...")
-        html = _get(url)
+    for entry in SEARCH_TARGETS:
+        name, url, parser = entry[0], entry[1], entry[2]
+        render = len(entry) > 3 and entry[3]
+        print(f"  fetching {name} ...{' (rendered)' if render else ''}")
+        html = _render(url) if render else _get(url)
         if debug and html:
             with open(f"debug_{name}.html", "w") as f:
                 f.write(html)
@@ -1446,6 +1557,7 @@ def main(debug: bool = False) -> None:
         listings = parser(html) if html else []
         print(f"    parsed {len(listings)} raw listings")
         all_listings.extend(listings)
+    _render_close()
 
     # saved-search alert emails (Trade-A-Plane / Controller / ASO that block scraping)
     if CONFIG["imap"]["user"]:

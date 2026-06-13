@@ -49,12 +49,15 @@ US-based aircraft marketplaces, in priority order:
 | **GlobalAir** | ✅ reliable | Fixed-price. Reads structured schema.org data — exact price, total time, engine SMOH, location, avionics. Walks several model search pages (`PF_GA_MODELS`), not just the 172. |
 | **Barnstormers** | ✅ reliable | Fixed-price. Parses each classified's ad text for price, specs, and location (all Cessna models). |
 | **AircraftBidder** | ✅ reliable | **Auctions.** Cessna lots with current/starting bid, bid count, time/status, and specs. Shown on the dashboard's **Auctions** tab. |
-| Trade-A-Plane | ⚠️ often blocked | All single-engine piston. Frequently returns HTTP 403; parses automatically whenever reachable. |
-| Controller | ⚠️ often blocked | JavaScript-rendered / bot-walled. |
+| **Trade-A-Plane** | 🎭 rendered | All single-engine piston, fetched with a real headless **Chromium (Playwright)** to get past the JS/bot wall; loads a capped number of detail pages for engine **SMOH** (`PF_RENDER_DETAILS`). |
+| **Controller** | 🎭 rendered | Same Playwright path as Trade-A-Plane. |
 | Aircraft Shopper Online (ASO) | ⚠️ often blocked | Returns HTTP 403 to automated requests. |
 | eBay (Motors → Airplanes) | ⚠️ often blocked | Server-rendered search; commonly rate-limits/403s automated requests. |
 | Craigslist | ⚠️ best-effort | Per-region RSS sweep (`PF_CL_REGIONS`, `PF_CL_QUERY`). Sparse and noisy; no auth. |
 | GovPlanet / gov surplus | ⚠️ best-effort | Government surplus aircraft lots; often JS-rendered. |
+
+The dashboard shows **TT** and **SMOH** (engine hours since major overhaul) columns on
+both the For Sale and Auctions tabs. Rendering can be disabled with `PF_RENDER=0`.
 
 > **Facebook Marketplace is intentionally not included.** It requires a
 > logged-in session and renders listings with JavaScript, blocks bots

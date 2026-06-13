@@ -51,6 +51,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Install Playwright Chromium
+        # Real headless browser so we can render Trade-A-Plane / Controller, which
+        # serve a JS/bot challenge that 403s plain HTTP requests.
+        run: python -m playwright install --with-deps chromium
+
       - name: Run plane finder
         env:
           PF_DIGEST_MD: digest.md        # markdown digest (for the issue)
