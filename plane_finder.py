@@ -199,7 +199,7 @@ def _render_enabled() -> bool:
     return os.environ.get("PF_RENDER", "1") != "0" and _PW["ok"]
 
 
-def _render(url: str, settle_ms: int = 2500, timeout_ms: int = 35000) -> str:
+def _render(url: str, settle_ms: int = 4000, timeout_ms: int = 45000) -> str:
     """Load a URL in headless Chromium and return the rendered HTML ('' on failure)."""
     if not _render_enabled():
         return ""
@@ -212,11 +212,23 @@ def _render(url: str, settle_ms: int = 2500, timeout_ms: int = 35000) -> str:
                 headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
             _PW["ctx"] = _PW["browser"].new_context(
                 user_agent=CONFIG["user_agent"], viewport={"width": 1366, "height": 900},
-                locale="en-US")
+                locale="en-US", extra_http_headers={
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                })
+            # light stealth: hide the obvious headless/automation tells
+            _PW["ctx"].add_init_script(
+                "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
+                "Object.defineProperty(navigator,'languages',{get:()=>['en-US','en']});"
+                "Object.defineProperty(navigator,'plugins',{get:()=>[1,2,3]});")
         page = _PW["ctx"].new_page()
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-            page.wait_for_timeout(settle_ms)   # let listings hydrate
+            try:                                   # let XHR-loaded listings arrive
+                page.wait_for_load_state("networkidle", timeout=12000)
+            except Exception:                      # noqa: BLE001 - networkidle can time out
+                pass
+            page.wait_for_timeout(settle_ms)
             return page.content()
         finally:
             page.close()
@@ -697,6 +709,34 @@ def parse_cards(source: str, html: str, base: str, render=None) -> list[Listing]
                     break
         cards.append((text, href, body))
 
+    # Fallback: some sites keep the year/price OUT of the anchor text. Re-scan by
+    # listing-looking links and pull make/year from the surrounding container.
+    if not cards:
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if not re.search(r"/(listing|aircraft|detail|inventory|for-sale)", href, re.I):
+                continue
+            full_href = href if href.startswith("http") else base.rstrip("/") + href
+            if full_href in seen:
+                continue
+            ctext, node = "", a
+            for _ in range(4):
+                node = node.parent
+                if node is None:
+                    break
+                t = node.get_text(" ", strip=True)
+                if (20 < len(t) < 800 and re.search(r"\b(19|20)\d{2}\b", t)
+                        and any(mk in t.lower() for mk in _MAKES)):
+                    ctext = t
+                    break
+            if not ctext:
+                continue
+            seen.add(full_href)
+            # use the container text as title so make/model/year parse from it
+            atext = a.get_text(" ", strip=True)
+            title = atext if re.search(r"\b(19|20)\d{2}\b", atext) else ctext[:90]
+            cards.append((title, full_href, ctext))
+
     for i, (title, href, body) in enumerate(cards):
         full = body
         if render and i < cap:
@@ -930,7 +970,7 @@ SEARCH_TARGETS = [
      lambda h: parse_cards("Controller", h, "https://www.controller.com", render=_render),
      True),
     ("ASO",
-     "https://www.aso.com/listings/aircraft-for-sale/Single-Engine-Piston",
+     "https://www.aso.com/listings/aircraft-for-sale/Cessna",
      lambda h: parse_generic("ASO", h, "https://www.aso.com")),
     # eBay Motors: airplanes category (26429), keyword-broad.
     ("eBay",
@@ -1556,6 +1596,20 @@ def main(debug: bool = False) -> None:
             print(f"    [debug] saved debug_{name}.html ({len(html)} bytes)")
         listings = parser(html) if html else []
         print(f"    parsed {len(listings)} raw listings")
+        # When a RENDERED source comes back empty, publish what the browser saw so
+        # we can tell a bot-challenge page from a parser miss. Remove once stable.
+        _site = os.environ.get("PF_SITE_DIR")
+        if (render and not listings and html and _site
+                and os.environ.get("PF_RENDER_DEBUG", "1") != "0"):
+            try:
+                os.makedirs(_site, exist_ok=True)
+                slug = re.sub(r"[^A-Za-z0-9]+", "_", name)
+                with open(os.path.join(_site, f"__render_{slug}.html"), "w") as f:
+                    f.write(html[:600_000])
+                print(f"    [debug] saved rendered HTML for {name} "
+                      f"(title-len {len(html)}) to site/__render_{slug}.html")
+            except OSError as e:
+                print(f"    [warn] could not save render debug: {e}")
         all_listings.extend(listings)
     _render_close()
 
