@@ -51,22 +51,15 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Install Playwright browsers + xvfb
-        # Install REAL Google Chrome (more authentic fingerprint than bundled
-        # Chromium) plus Chromium deps and xvfb, to run headed and clear
-        # Controller's Cloudflare challenge.
-        run: |
-          python -m playwright install --with-deps chromium
-          python -m playwright install chrome
-          sudo apt-get install -y xvfb
-
       - name: Run plane finder
         env:
           PF_DIGEST_MD: digest.md        # markdown digest (for the issue)
           PF_SITE_DIR: site              # static dashboard output dir
           PF_HISTORY: plane_finder_history.json  # day-over-day trend, committed back
-          PF_HEADED: "1"                 # headed browser under xvfb (beats Cloudflare)
-          PF_BROWSER_CHANNEL: chrome     # use real Google Chrome, not Chromium
+          # Trade-A-Plane (DataDome) & Controller (Cloudflare) block the cloud
+          # runner's datacenter IP, so rendering is off here. Set PF_RENDER=1 on a
+          # self-hosted/residential runner (and `playwright install chromium`) to use it.
+          PF_RENDER: "0"
           # Optional: ingest Trade-A-Plane / Controller saved-search alert emails.
           # Set these three repo secrets to enable; leave unset to skip cleanly.
           PF_IMAP_USER: ${{ secrets.PF_IMAP_USER }}
@@ -74,7 +67,7 @@ jobs:
           # Host defaults to imap.gmail.com in code. For a non-Gmail mailbox,
           # add a PF_IMAP_HOST secret and uncomment the next line:
           # PF_IMAP_HOST: ${{ secrets.PF_IMAP_HOST }}
-        run: xvfb-run -a python plane_finder.py
+        run: python plane_finder.py
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
