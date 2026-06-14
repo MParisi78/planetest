@@ -207,12 +207,48 @@ def _looks_challenged(html: str, title: str) -> bool:
             or "/cdn-cgi/challenge" in h or "datadome" in h and "captcha" in h)
 
 
+def _fetch_via_proxy(url: str, template: str) -> str:
+    """Fetch a bot-walled URL through a scraping API (residential proxies + JS render).
+
+    The GitHub runner's datacenter IP gets a Cloudflare/DataDome challenge on
+    Trade-A-Plane & Controller. A scraping-API service fetches from a trusted
+    residential IP and runs the JS, so our normal parsers work on what it returns.
+
+    PF_PROXY_URL is a full endpoint *template* containing the literal `{url}`,
+    where the (URL-encoded) target gets substituted. Put your API key in it and
+    store the whole thing as the PF_PROXY_URL repo secret. Provider-agnostic:
+      ScraperAPI:  https://api.scraperapi.com/?api_key=KEY&render=true&url={url}
+      ScrapingBee: https://app.scrapingbee.com/api/v1/?api_key=KEY&render_js=true&url={url}
+      ScrapingAnt: https://api.scrapingant.com/v2/general?x-api-key=KEY&browser=true&url={url}
+      ZenRows:     https://api.zenrows.com/v1/?apikey=KEY&js_render=true&url={url}
+    For Cloudflare/DataDome you usually also need each provider's premium/residential
+    flag (e.g. &premium=true / &premium_proxy=true). Returns '' on any failure.
+    """
+    endpoint = template.replace("{url}", requests.utils.quote(url, safe=""))
+    try:
+        # render+proxy round-trips are slow; give the service generous headroom
+        r = requests.get(endpoint, timeout=max(CONFIG["request_timeout"], 75))
+        if r.status_code == 200 and r.text and not _looks_challenged(r.text, ""):
+            return r.text
+        print(f"  [warn] proxy fetch HTTP {r.status_code} "
+              f"({len(r.text or '')}b) for {url}")
+    except requests.RequestException as e:
+        print(f"  [warn] proxy fetch failed for {url}: {e}")
+    return ""
+
+
 def _render(url: str, settle_ms: int = 4000, timeout_ms: int = 45000) -> str:
     """Load a URL in a stealthed browser, wait out any JS bot-challenge, return HTML.
 
     Headed Chromium under xvfb (PF_HEADED=1) clears Cloudflare's non-interactive
     challenge far more often than headless. Returns '' on failure.
+
+    If PF_PROXY_URL is set we skip the browser entirely and fetch through a
+    scraping API instead (works from the cloud runner's blocked IP).
     """
+    proxy = os.environ.get("PF_PROXY_URL", "").strip()
+    if proxy:
+        return _fetch_via_proxy(url, proxy)
     if not _render_enabled():
         return ""
     try:

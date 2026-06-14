@@ -57,9 +57,18 @@ jobs:
           PF_SITE_DIR: site              # static dashboard output dir
           PF_HISTORY: plane_finder_history.json  # day-over-day trend, committed back
           # Trade-A-Plane (DataDome) & Controller (Cloudflare) block the cloud
-          # runner's datacenter IP, so rendering is off here. Set PF_RENDER=1 on a
-          # self-hosted/residential runner (and `playwright install chromium`) to use it.
+          # runner's datacenter IP, so the local browser is off here. Set PF_RENDER=1
+          # on a self-hosted/residential runner (+ `playwright install chromium`) to use it.
           PF_RENDER: "0"
+          # ...OR route those two sites through a scraping API (residential proxies +
+          # JS render). Add a PF_PROXY_URL repo secret = a full endpoint template with
+          # your key and a literal {url}, e.g. for ScraperAPI:
+          #   https://api.scraperapi.com/?api_key=KEY&render=true&premium=true&url={url}
+          # Leave the secret unset to skip cleanly. See _fetch_via_proxy() for providers.
+          PF_PROXY_URL: ${{ secrets.PF_PROXY_URL }}
+          # Free-tier budget guard: 0 = search-result cards only (2 API calls/run, no
+          # per-listing detail crawl). Raise it if your plan has credits to spare.
+          PF_RENDER_DETAILS: "0"
           # Optional: ingest Trade-A-Plane / Controller saved-search alert emails.
           # Set these three repo secrets to enable; leave unset to skip cleanly.
           PF_IMAP_USER: ${{ secrets.PF_IMAP_USER }}
